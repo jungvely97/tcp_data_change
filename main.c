@@ -51,6 +51,14 @@ typedef struct TCPHeader {
     uint16_t UP;
 }TCPH;
 
+void dump(unsigned char *pkt, int len){
+
+    printf("\n");
+    for(int i =0; i< len; i++){
+    printf("%02x ", pkt[i]);
+    }
+    printf("\n");
+}
 
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
           struct nfq_data *nfa, void *data)
@@ -61,23 +69,39 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
     struct nfqnl_msg_packet_hdr *packet_hdr;
     IPH *resip;
     TCPH *restcp;
+    bool verdict = false;
 
     packet_hdr = nfq_get_msg_packet_hdr(nfa);
     id = ntohl(packet_hdr->packet_id);
     payload = nfq_get_payload(nfa, &value);
+   // dump((unsigned char *)value, 20);
     resip = (IPH *)value;
-
     if(resip->Protocol == 0x06){
         restcp = (TCPH *)(value + (resip->IHL * 4));
         if(ntohs(restcp->SrcPort) ==80){
-            value += restcp->Offset;
+            value = value + restcp->Offset * 4 + resip->IHL * 4;
             smatch m;
-            if(regex_search(value, m, "hacking")){
-                regex_replace(value, "hacking", "hooking");
+            string data = (char *)value;
+            regex before("hacking");
+            cout << data;
+
+            if(regex_search(data, m, before)){
+                printf("11\n");
+                regex_replace(data, before, "hooking");
+                memcpy(value, data.c_str(), strlen(data.c_str()));
+                printf(" len = %d ", strlen(data.c_str()));
+                cout << data;
+                //checksum
+
+                verdict = true;
             }
         }
     }
 
+    if(verdict){
+        printf("success!\n");
+        return nfq_set_verdict(qh, id, NF_ACCEPT, payload, value);
+    }else return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 
 }
 
@@ -89,7 +113,7 @@ int main(int argc, char **argv){
     int fd;
     int rv;
     char buf[4096] __attribute__ ((aligned));
-    uint8_t data;
+    //uint8_t data;
 
     printf("opening library handle\n");
     h = nfq_open();
