@@ -89,22 +89,22 @@ uint16_t calculate(uint16_t *data, uint32_t len){
 }
 
 uint16_t checksum( uint8_t *value, uint32_t payload){
-    PseudoH *pseudo;
+    PseudoH pseudo;
     IPH *resip;
     TCPH *restcp;
-    uint16_t pseudo_result, tcp_result, total_result;
+    uint16_t pseudo_result, tcp_result;
+    uint32_t total_result;
 
     resip = (IPH *)value;
     restcp = (TCPH *)(value + resip->IHL *4);
-
-    memcpy(&pseudo->src_ip, &resip->SrcAdd, sizeof(pseudo->src_ip));
-    memcpy(&pseudo->dst_ip, &resip->DstAdd, sizeof(pseudo->dst_ip));
-    pseudo->protocal = resip->Protocol;
-    pseudo->tcp_len = htons(payload - (resip->IHL *4));
+    memcpy(&pseudo.src_ip, &resip->SrcAdd, sizeof(pseudo.src_ip));
+    memcpy(&pseudo.dst_ip, &resip->DstAdd, sizeof(pseudo.dst_ip));
+    pseudo.protocal = resip->Protocol;
+    pseudo.tcp_len = htons(payload - (resip->IHL *4));
     restcp->Check = 0x00;
 
     pseudo_result = calculate((uint16_t *)&pseudo, sizeof(pseudo));
-    tcp_result = calculate((uint16_t *)restcp, ntohs(pseudo->tcp_len));
+    tcp_result = calculate((uint16_t *)restcp, ntohs(pseudo.tcp_len));
 
     total_result = pseudo_result + tcp_result;
     total_result = (total_result >> 16) + (total_result & 0xffff);
@@ -127,38 +127,25 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
     packet_hdr = nfq_get_msg_packet_hdr(nfa);
     id = ntohl(packet_hdr->packet_id);
     payload = nfq_get_payload(nfa, &value);
-    //dump((unsigned char *)value, 20);
     resip = (IPH *)value;
     if(resip->Protocol == 0x06){
-        //restcp = (TCPH *)(value + (resip->IHL * 4));
         value += resip->IHL *4;
         restcp = (TCPH *)value;
-        //dump((unsigned char *)value, 20);
-        //printf("iph len = %d \n", resip->IHL * 4);
         if(ntohs(restcp->SrcPort) ==80 ){
-            value += (restcp->Offset * 4); //+ (resip->IHL * 4);
-            //printf("tcph len = %x \n", restcp->Offset);
-            //dump((unsigned char *)value, 20);
+            value += (restcp->Offset * 4);
             smatch m;
             string http = (char *)value;
             regex before("hacking");
-            //cout <<http.c_str();
-            //printf("http len = %d \n", sizeof(http.c_str()));
-            //printf("http = %s \n", http);
 
             if(regex_search(http, m, before)){
-                //printf("11\n");
                 http = regex_replace(http, before, "hooking");
                 memcpy(value, http.c_str(), strlen(http.c_str()));
-                //printf(" len = %d ", strlen(http.c_str()));
                 cout << value;
-                //checksum
                 value = value - (resip->IHL *4 + restcp->Offset * 4);
-                checksum( value, payload);
+                checksum(value, payload);
 
                 verdict = true;
             }
-           // if(!regex_search(http, m, before)) printf("fale!\n");
         }
     }
 
@@ -177,7 +164,6 @@ int main(int argc, char **argv){
     int fd;
     int rv;
     char buf[4096] __attribute__ ((aligned));
-    //uint8_t data;
 
     printf("opening library handle\n");
     h = nfq_open();
