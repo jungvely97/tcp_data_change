@@ -13,6 +13,7 @@
 
 using namespace std;
 
+#pragma pack(push, 1)
 typedef struct  {
     uint8_t IHL : 4;
     uint8_t Version : 4;
@@ -30,14 +31,16 @@ typedef struct  {
     struct in_addr SrcAdd;
     struct in_addr DstAdd;
 }IPH;
+#pragma pack(pop)
 
+#pragma pack(push, 1)
 typedef struct TCPHeader {
     uint16_t SrcPort;
     uint16_t DstPort;
     uint32_t SN;
     uint32_t AN;
-    uint8_t Offset : 4;
     uint8_t Reserved : 4;
+    uint8_t Offset : 4;
     uint8_t FlagsC : 1;
     uint8_t FlagsE : 1;
     uint8_t FlagsU : 1;
@@ -49,7 +52,18 @@ typedef struct TCPHeader {
     uint16_t Window;
     uint16_t Check;
     uint16_t UP;
-}TCPH;
+}TCPH; //Little-endian
+#pragma (pop)
+
+#pragma pack(push, 1)
+typedef struct Pseudoheader {
+    uint32_t src_ip;
+    uint32_t dst_ip;
+    uint8_t reserved = 0;  // 항상 0
+    uint8_t protocal;
+    uint16_t tcp_len;  //tcp 길이 (header + data)
+}PseudoH;
+#pragma (pop)
 
 void dump(unsigned char *pkt, int len){
 
@@ -60,11 +74,50 @@ void dump(unsigned char *pkt, int len){
     printf("\n");
 }
 
+uint16_t calculate(uint16_t *data, uint32_t len){
+    uint32_t sum = 0;
+
+    while(1){
+        if(len == 0 || len == 1) break;
+        sum += ntohs(*data++);
+        len -= 2;
+    } if(len == 1) sum+=ntohs((uint8_t)*data);
+
+    sum = (sum >> 16) + (sum & 0xffff);
+
+    return sum;
+}
+
+uint16_t checksum( uint8_t *value, uint32_t payload){
+    PseudoH *pseudo;
+    IPH *resip;
+    TCPH *restcp;
+    uint16_t pseudo_result, tcp_result, total_result;
+
+    resip = (IPH *)value;
+    restcp = (TCPH *)(value + resip->IHL *4);
+
+    memcpy(&pseudo->src_ip, &resip->SrcAdd, sizeof(pseudo->src_ip));
+    memcpy(&pseudo->dst_ip, &resip->DstAdd, sizeof(pseudo->dst_ip));
+    pseudo->protocal = resip->Protocol;
+    pseudo->tcp_len = htons(payload - (resip->IHL *4));
+    restcp->Check = 0x00;
+
+    pseudo_result = calculate((uint16_t *)&pseudo, sizeof(pseudo));
+    tcp_result = calculate((uint16_t *)restcp, ntohs(pseudo->tcp_len));
+
+    total_result = pseudo_result + tcp_result;
+    total_result = (total_result >> 16) + (total_result & 0xffff);
+    restcp->Check = (uint16_t)(ntohs(~total_result));
+
+    return ntohs(~total_result);
+}
+
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
           struct nfq_data *nfa, void *data)
 {
     u_int32_t id;
-    int payload;
+    uint32_t payload;
     uint8_t *value;
     struct nfqnl_msg_packet_hdr *packet_hdr;
     IPH *resip;
@@ -74,27 +127,38 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
     packet_hdr = nfq_get_msg_packet_hdr(nfa);
     id = ntohl(packet_hdr->packet_id);
     payload = nfq_get_payload(nfa, &value);
-   // dump((unsigned char *)value, 20);
+    //dump((unsigned char *)value, 20);
     resip = (IPH *)value;
     if(resip->Protocol == 0x06){
-        restcp = (TCPH *)(value + (resip->IHL * 4));
-        if(ntohs(restcp->SrcPort) ==80){
-            value = value + restcp->Offset * 4 + resip->IHL * 4;
+        //restcp = (TCPH *)(value + (resip->IHL * 4));
+        value += resip->IHL *4;
+        restcp = (TCPH *)value;
+        //dump((unsigned char *)value, 20);
+        //printf("iph len = %d \n", resip->IHL * 4);
+        if(ntohs(restcp->SrcPort) ==80 ){
+            value += (restcp->Offset * 4); //+ (resip->IHL * 4);
+            //printf("tcph len = %x \n", restcp->Offset);
+            //dump((unsigned char *)value, 20);
             smatch m;
-            string data = (char *)value;
+            string http = (char *)value;
             regex before("hacking");
-            cout << data;
+            //cout <<http.c_str();
+            //printf("http len = %d \n", sizeof(http.c_str()));
+            //printf("http = %s \n", http);
 
-            if(regex_search(data, m, before)){
-                printf("11\n");
-                regex_replace(data, before, "hooking");
-                memcpy(value, data.c_str(), strlen(data.c_str()));
-                printf(" len = %d ", strlen(data.c_str()));
-                cout << data;
+            if(regex_search(http, m, before)){
+                //printf("11\n");
+                http = regex_replace(http, before, "hooking");
+                memcpy(value, http.c_str(), strlen(http.c_str()));
+                //printf(" len = %d ", strlen(http.c_str()));
+                cout << value;
                 //checksum
+                value = value - (resip->IHL *4 + restcp->Offset * 4);
+                checksum( value, payload);
 
                 verdict = true;
             }
+           // if(!regex_search(http, m, before)) printf("fale!\n");
         }
     }
 
