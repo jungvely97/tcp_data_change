@@ -28,8 +28,8 @@ typedef struct  {
     uint8_t TTL;
     uint8_t Protocol;
     uint16_t HeaderCheck;
-    struct in_addr SrcAdd;
-    struct in_addr DstAdd;
+    uint32_t SrcAdd;
+    uint32_t DstAdd;
 }IPH;
 #pragma pack(pop)
 
@@ -88,21 +88,16 @@ uint16_t calculate(uint16_t *data, uint32_t len){
     return sum;
 }
 
-uint16_t checksum( uint8_t *value, uint32_t payload){
+uint16_t checksum( uint8_t *value, uint32_t payload, IPH *resip, TCPH *restcp){
     PseudoH pseudo;
-    IPH *resip;
-    TCPH *restcp;
     uint16_t pseudo_result, tcp_result;
     uint32_t total_result;
 
-    resip = (IPH *)value;
-    restcp = (TCPH *)(value + resip->IHL *4);
-    memcpy(&pseudo.src_ip, &resip->SrcAdd, sizeof(pseudo.src_ip));
-    memcpy(&pseudo.dst_ip, &resip->DstAdd, sizeof(pseudo.dst_ip));
+    pseudo.src_ip = resip->SrcAdd;
+    pseudo.dst_ip = resip->DstAdd;
     pseudo.protocal = resip->Protocol;
     pseudo.tcp_len = htons(payload - (resip->IHL *4));
     restcp->Check = 0x00;
-
     pseudo_result = calculate((uint16_t *)&pseudo, sizeof(pseudo));
     tcp_result = calculate((uint16_t *)restcp, ntohs(pseudo.tcp_len));
 
@@ -110,7 +105,6 @@ uint16_t checksum( uint8_t *value, uint32_t payload){
     total_result = (total_result >> 16) + (total_result & 0xffff);
     restcp->Check = (uint16_t)(ntohs(~total_result));
 
-    return ntohs(~total_result);
 }
 
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
@@ -134,16 +128,14 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
         if(ntohs(restcp->SrcPort) ==80 ){
             value += (restcp->Offset * 4);
             smatch m;
-            string http = (char *)value;
-            regex before("hacking");
+            string http((char *)value, ntohs(resip->IHL));
+            static regex before("hacking");
 
             if(regex_search(http, m, before)){
                 http = regex_replace(http, before, "hooking");
                 memcpy(value, http.c_str(), strlen(http.c_str()));
                 cout << value;
-                value = value - (resip->IHL *4 + restcp->Offset * 4);
-                checksum(value, payload);
-
+                checksum(value, payload, resip, restcp);
                 verdict = true;
             }
         }
@@ -151,6 +143,7 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 
     if(verdict){
         printf("success!\n");
+        value = value - (resip->IHL *4 + restcp->Offset * 4);
         return nfq_set_verdict(qh, id, NF_ACCEPT, payload, value);
     }else return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
 
